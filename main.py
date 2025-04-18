@@ -3,6 +3,8 @@ from tkinter import ttk, scrolledtext, filedialog
 import requests
 import base64
 from PIL import Image, ImageTk
+import cv2
+import numpy as np
 
 class App:
     def __init__(self, root):
@@ -31,44 +33,71 @@ class App:
             self.main_frame.rowconfigure(i, weight=0)
         self.main_frame.rowconfigure(5, weight=1)
         
-        # Add image selection button
-        self.image_button = ttk.Button(self.main_frame, text="Select Image", command=self.select_image)
-        self.image_button.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
-        
-        # Image preview label
+        # --- Webcam and Image Used side by side ---
+        # Titles
+        self.webcam_title = ttk.Label(self.main_frame, text="Webcam Preview", font=("TkDefaultFont", 10, "bold"))
+        self.webcam_title.grid(row=0, column=0, padx=(0, 10), pady=(0, 2), sticky="s")
+        self.image_title = ttk.Label(self.main_frame, text="Image Being Used", font=("TkDefaultFont", 10, "bold"))
+        self.image_title.grid(row=0, column=1, padx=(10, 0), pady=(0, 2), sticky="s")
+
+        # Webcam preview (left)
+        self.webcam_preview_label = ttk.Label(self.main_frame, text="Webcam preview loading...")
+        self.webcam_preview_label.grid(row=1, column=0, padx=(0, 10), pady=(0, 10), sticky="n")
+
+        # Image preview (right)
         self.image_preview = ttk.Label(self.main_frame, text="No image selected")
-        self.image_preview.grid(row=1, column=0, sticky=tk.W, pady=(0, 10))
+        self.image_preview.grid(row=1, column=1, padx=(10, 0), pady=(0, 10), sticky="n")
+
+        # --- Image selection/capture group aligned with bottom of webcam preview ---
+        self.image_group = ttk.Frame(self.main_frame)
+        self.image_group.grid(row=2, column=1, sticky="s", padx=(10, 0), pady=(0, 10))
+        self.image_group.columnconfigure(0, weight=1)
+        self.image_group.columnconfigure(1, weight=1)
+        self.image_button = ttk.Button(self.image_group, text="Open Image...", command=self.select_image)
+        self.image_button.grid(row=0, column=0, padx=(0, 10), sticky="ew")
+        self.webcam_button = ttk.Button(self.image_group, text="Take Photo", command=self.capture_webcam_image)
+        self.webcam_button.grid(row=0, column=1, padx=(10, 0), sticky="ew")
+        # Add Clear Image button under Take Photo
+        self.clear_image_button = ttk.Button(self.image_group, text="Clear Image", command=self.clear_image)
+        self.clear_image_button.grid(row=1, column=0, columnspan=2, pady=(5, 0), sticky="ew")
         
         # Add a simple label
         self.label = ttk.Label(self.main_frame, text="Enter your prompt:")
-        self.label.grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
+        self.label.grid(row=3, column=0, sticky=tk.W, pady=(0, 5))
         
         # Add text input box
         self.text_input = ttk.Entry(self.main_frame, width=50)
-        self.text_input.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.text_input.insert(0, "Describe image")
+        self.text_input.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         # Bind Enter key to submit
         self.text_input.bind("<Return>", lambda event: self.process_query())
         
         # Add submit button
         self.submit_button = ttk.Button(self.main_frame, text="Submit", command=self.process_query)
-        self.submit_button.grid(row=3, column=1, padx=(5, 0), pady=(0, 10), sticky=tk.E)
+        self.submit_button.grid(row=4, column=1, padx=(5, 0), pady=(0, 10), sticky=tk.E)
         
         # Add output display label
         self.output_label = ttk.Label(self.main_frame, text="Response:")
-        self.output_label.grid(row=4, column=0, sticky=tk.W, pady=(10, 5))
+        self.output_label.grid(row=5, column=0, sticky=tk.W, pady=(10, 5))
         
         # Add text output display (scrolled text widget)
         self.text_output = scrolledtext.ScrolledText(self.main_frame, width=60, height=15, wrap=tk.WORD)
-        self.text_output.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        
+        self.text_output.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+
         # Variables to store the selected image
         self.image_path = None
+        self.image_data = None  # Ensure image_data is always defined
         self.text_input.focus_set()
+
+        # Start webcam preview
+        self.webcam_cap = None
+        self.webcam_preview_running = True
+        self.start_webcam_preview()
 
     def select_image(self):
         """Open file dialog to select an image"""
         file_path = filedialog.askopenfilename(
-            title="Select Image",
+            title="Open image...",
             filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.PNG *.JPG *.JPEG *.GIF *.BMP")]
         )
         
@@ -77,7 +106,7 @@ class App:
             # Load and display preview
             try:
                 img = Image.open(file_path)
-                img = img.resize((100, 100), Image.LANCZOS)  # Create thumbnail
+                img = img.resize((150, 150), Image.LANCZOS)  # Create larger thumbnail
                 self.photo = ImageTk.PhotoImage(img)
                 self.image_preview.config(image=self.photo, text="")
                 
@@ -89,14 +118,52 @@ class App:
                 self.text_output.insert(tk.END, f"Error loading image: {str(e)}\n")
                 self.image_preview.config(text="Error loading image")
                 self.image_data = None
+        else:
+            self.image_data = None
+            self.image_preview.config(image='', text="No image selected")
+
+    def capture_webcam_image(self):
+        """Capture an image from the webcam and use it as the selected image"""
+        try:
+            if self.webcam_cap is None:
+                self.text_output.insert(tk.END, "Webcam is not running.\n")
+                return
+            ret, frame = self.webcam_cap.read()
+            if not ret:
+                self.text_output.insert(tk.END, "Failed to capture image from webcam.\n")
+                return
+            # Mirror the frame horizontally
+            frame = cv2.flip(frame, 1)
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
+            img_thumbnail = img.resize((150, 150), Image.LANCZOS)
+            self.photo = ImageTk.PhotoImage(img_thumbnail)
+            self.image_preview.config(image=self.photo, text="")
+            # Encode as JPEG in memory
+            import io
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG")
+            img_bytes = buffer.getvalue()
+            self.image_data = base64.b64encode(img_bytes).decode('utf-8')
+            self.image_path = None  # No file path for webcam image
+        except Exception as e:
+            self.text_output.insert(tk.END, f"Error capturing webcam image: {str(e)}\n")
+            self.image_preview.config(text="Error capturing image")
+            self.image_data = None
 
     def process_query(self):
         """Process the query with Ollama Llava model"""
         prompt = self.text_input.get()
         if not prompt:
-            self.text_output.insert(tk.END, "Please enter a prompt\n")
-            return
-            
+            if self.image_data:
+                prompt = "Describe image"
+            else:
+                # Do nothing if no prompt and no image
+                return
+        # Show 'Thinking...' immediately
+        self.text_output.delete(1.0, tk.END)
+        self.text_output.insert(tk.END, "Thinking...\n")
         import threading
         threading.Thread(target=self.send_request, args=(prompt,), daemon=True).start()
     
@@ -110,9 +177,11 @@ class App:
                 "stream": False
             }
             
-            # Add image to payload if available
+            # Add image to payload if available and not empty
             if self.image_data:
-                payload["images"] = [self.image_data]
+                if self.image_data.strip() != "":
+                    payload["images"] = [self.image_data]
+            # If no image, do not include 'images' key (already handled by above)
             
             # Send the request
             response = requests.post(self.api_url, json=payload)
@@ -136,6 +205,38 @@ class App:
         self.text_output.delete(1.0, tk.END)
         self.text_output.insert(tk.END, text)
 
+    def start_webcam_preview(self):
+        try:
+            if self.webcam_cap is None:
+                self.webcam_cap = cv2.VideoCapture(0)
+            ret, frame = self.webcam_cap.read()
+            if ret:
+                # Mirror the frame horizontally
+                frame = cv2.flip(frame, 1)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(frame_rgb)
+                img = img.resize((320, 240), Image.LANCZOS)
+                self.webcam_preview_imgtk = ImageTk.PhotoImage(img)
+                self.webcam_preview_label.config(image=self.webcam_preview_imgtk, text="")
+            else:
+                self.webcam_preview_label.config(text="Webcam not available")
+        except Exception as e:
+            self.webcam_preview_label.config(text=f"Webcam error: {e}")
+        if self.webcam_preview_running:
+            self.root.after(30, self.start_webcam_preview)
+
+    def stop_webcam_preview(self):
+        self.webcam_preview_running = False
+        if self.webcam_cap is not None:
+            self.webcam_cap.release()
+            self.webcam_cap = None
+
+    def clear_image(self):
+        """Clear the image being used and reset preview and data"""
+        self.image_path = None
+        self.image_data = None
+        self.image_preview.config(image='', text="No image selected")
+
 def main():
     """Main entry point for the application"""
     # Initialize Tk with specific options
@@ -145,7 +246,7 @@ def main():
     root_window.title("LLAVA Model Test")
     
     # Set window geometry
-    root_window.geometry("600x600")
+    root_window.geometry("600x710")
     
     # Make window resizable - explicitly set both dimensions
     root_window.resizable(width=True, height=True)
@@ -160,7 +261,13 @@ def main():
     app = App(root_window)
     
     # Start the main loop
-    root_window.mainloop()
+    try:
+        root_window.mainloop()
+    finally:
+        app.stop_webcam_preview()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nExiting on Ctrl-C (KeyboardInterrupt)")
