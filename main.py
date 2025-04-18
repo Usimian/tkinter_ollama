@@ -62,7 +62,7 @@ class App:
         self.clear_image_button.grid(row=1, column=0, columnspan=2, pady=(5, 0), sticky="ew")
         
         # Add a simple label
-        self.label = ttk.Label(self.main_frame, text="Enter your prompt:")
+        self.label = ttk.Label(self.main_frame, text="Enter your prompt:", font=("TkDefaultFont", 10, "bold"))
         self.label.grid(row=3, column=0, sticky=tk.W, pady=(0, 5))
         
         # Add text input box
