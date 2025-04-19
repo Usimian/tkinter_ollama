@@ -5,6 +5,18 @@ import base64
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
+import torch
+import sounddevice as sd
+
+# Add Silero TTS model loading (initialize once)
+def load_silero_tts():
+    model, example_text = torch.hub.load(
+        repo_or_dir='snakers4/silero-models',
+        model='silero_tts',
+        language='en',
+        speaker='v3_en'
+    )
+    return model
 
 class App:
     def __init__(self, root):
@@ -17,7 +29,7 @@ class App:
         
         # API configuration
         self.api_url = "http://localhost:11434/api/generate"
-        self.model = "llava"
+        self.model = "Gemma3"
         
         # Create the main frame
         self.main_frame = ttk.Frame(self.root, padding="10")
@@ -94,6 +106,14 @@ class App:
         self.webcam_preview_running = True
         self.start_webcam_preview()
 
+        # Load Silero TTS model
+        self.tts_model = load_silero_tts()
+        self.tts_sample_rate = 48000
+        self.tts_speaker = 'en_0'
+        # Add Speak button
+        self.speak_button = ttk.Button(self.main_frame, text="🔊 Speak", command=self.speak_response)
+        self.speak_button.grid(row=5, column=1, sticky=tk.E, padx=(5, 0), pady=(10, 5))
+
     def select_image(self):
         """Open file dialog to select an image"""
         file_path = filedialog.askopenfilename(
@@ -132,8 +152,6 @@ class App:
             if not ret:
                 self.text_output.insert(tk.END, "Failed to capture image from webcam.\n")
                 return
-            # Mirror the frame horizontally
-            frame = cv2.flip(frame, 1)
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
@@ -211,8 +229,6 @@ class App:
                 self.webcam_cap = cv2.VideoCapture(0)
             ret, frame = self.webcam_cap.read()
             if ret:
-                # Mirror the frame horizontally
-                frame = cv2.flip(frame, 1)
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
                 img = img.resize((320, 240), Image.LANCZOS)
@@ -237,6 +253,22 @@ class App:
         self.image_data = None
         self.image_preview.config(image='', text="No image selected")
 
+    def speak_response(self):
+        """Speak the response text using Silero TTS"""
+        text = self.text_output.get(1.0, tk.END).strip()
+        if not text:
+            return
+        try:
+            audio = self.tts_model.apply_tts(
+                text=text,
+                speaker=self.tts_speaker,
+                sample_rate=self.tts_sample_rate
+            )
+            audio_np = np.array(audio)
+            sd.play(audio_np, self.tts_sample_rate)
+        except Exception as e:
+            self.text_output.insert(tk.END, f"\nTTS error: {e}\n")
+
 def main():
     """Main entry point for the application"""
     # Initialize Tk with specific options
@@ -246,7 +278,7 @@ def main():
     root_window.title("LLAVA Model Test")
     
     # Set window geometry
-    root_window.geometry("600x710")
+    root_window.geometry("600x750")
     
     # Make window resizable - explicitly set both dimensions
     root_window.resizable(width=True, height=True)
